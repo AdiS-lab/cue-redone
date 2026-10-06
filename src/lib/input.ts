@@ -1,6 +1,5 @@
-// Keyboard simulation of the ring's single button:
-//   Space = click (capture + identify), D = double-click (backchannel),
-//   H = hold (queue sentence). A ring client can call the same handler later.
+// Keyboard stand-in for the ring's single button:
+//   Space = click (look), D = double-click (more), H = hold (ask).
 import type { InputAction } from "./types";
 
 type InputHandler = (action: InputAction) => void;
@@ -17,6 +16,7 @@ function isTyping(target: EventTarget | null): boolean {
   return (
     target instanceof HTMLInputElement ||
     target instanceof HTMLTextAreaElement ||
+    target instanceof HTMLSelectElement ||
     (target instanceof HTMLElement && target.isContentEditable)
   );
 }

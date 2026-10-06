@@ -28,14 +28,7 @@
           "cameraPermission": "Qu uses the camera to see what you point at."
         }
       ],
-      "expo-status-bar",
-      [
-        "expo-contacts",
-        {
-          "contactsPermission": "Qu reads your contacts only so you can choose people to message privately. Only the people you tick are sent to your laptop."
-        }
-      ],
-      "expo-audio"
+      "expo-status-bar"
     ]
   }
 }

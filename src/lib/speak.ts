@@ -1,7 +1,5 @@
-import type { Backchannel } from "./types";
-
-let currentUtterance: SpeechSynthesisUtterance | null = null;
-let rate = 0.95;
+// Browser SpeechSynthesis, one utterance at a time. The fallback voice when ElevenLabs isn't available.
+let rate = 1.05;
 
 export function setSpeechRate(r: number): void {
   rate = Math.min(2, Math.max(0.5, r));
@@ -11,71 +9,23 @@ export function speechRate(): number {
   return rate;
 }
 
-export function speakNow(text: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    window.speechSynthesis.cancel();
+export function browserSpeak(text: string): Promise<void> {
+  return new Promise((resolve) => {
+    if (!("speechSynthesis" in window)) return resolve();
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.rate = rate;
-    utterance.pitch = 1.0;
-    currentUtterance = utterance;
-    // Some systems never fire onend (no voices installed) — don't hang the UI
-    const safety = setTimeout(
-      () => finish(),
-      3000 + text.split(/\s+/).length * 600
-    );
-    const finish = (err?: unknown) => {
+    // Some systems never fire onend (no voices installed); don't hang the queue
+    const safety = setTimeout(() => resolve(), 2000 + text.split(/\s+/).length * 450);
+    const finish = () => {
       clearTimeout(safety);
-      if (currentUtterance === utterance) currentUtterance = null;
-      if (err) reject(err);
-      else resolve();
+      resolve();
     };
-    utterance.onend = () => finish();
-    utterance.onerror = (e) =>
-      // "interrupted"/"canceled" just mean another utterance took over
-      e.error === "interrupted" || e.error === "canceled" ? finish() : finish(e);
+    utterance.onend = finish;
+    utterance.onerror = finish;
     window.speechSynthesis.speak(utterance);
   });
 }
 
-export function stopSpeaking(): void {
-  window.speechSynthesis.cancel();
-  currentUtterance = null;
+export function browserStop(): void {
+  if ("speechSynthesis" in window) window.speechSynthesis.cancel();
 }
-
-export function isSpeaking(): boolean {
-  return currentUtterance !== null;
-}
-
-// Backchannels use SpeechSynthesis with short, punchy delivery
-const BACKCHANNEL_TEXT: Record<Backchannel, string> = {
-  yes: "Yes!",
-  no: "No.",
-  haha: "Ha ha!",
-  "mm-hmm": "Mm hmm.",
-  wait: "Wait.",
-  "hold-on": "Hold on.",
-  wow: "Wow!",
-  okay: "Okay.",
-  thanks: "Thanks!",
-};
-
-export function playBackchannel(id: Backchannel): void {
-  window.speechSynthesis.cancel();
-  const utterance = new SpeechSynthesisUtterance(BACKCHANNEL_TEXT[id]);
-  utterance.rate = 1.3;
-  utterance.pitch = 1.1;
-  window.speechSynthesis.speak(utterance);
-}
-
-// TTS interface for swapping to ElevenLabs later
-export interface TTSEngine {
-  speak(text: string): Promise<void>;
-  stop(): void;
-  playBackchannel(id: Backchannel): void;
-}
-
-export const browserTTS: TTSEngine = {
-  speak: speakNow,
-  stop: stopSpeaking,
-  playBackchannel,
-};

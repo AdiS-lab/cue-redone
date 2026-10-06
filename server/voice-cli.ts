@@ -1,6 +1,6 @@
-// npm run voice -- status | reactions | clone <audio file...> --name "Dad"
+// npm run voice -- status | clone <audio file...> --name "Dad"
 import "./env.ts";
-import { cloneVoice, configured, currentVoice, generateReactions } from "./voice.ts";
+import { cloneVoice, configured, currentVoice } from "./voice.ts";
 
 const [cmd, ...rest] = process.argv.slice(2);
 const nameAt = rest.indexOf("--name");
@@ -13,13 +13,10 @@ if (!configured()) {
 }
 if (cmd === "status") {
   console.log(currentVoice());
-} else if (cmd === "reactions") {
-  console.log(`generating with voice: ${currentVoice().name}`);
-  console.log("done:", (await generateReactions()).join(", "));
 } else if (cmd === "clone" && files.length > 0) {
   const id = await cloneVoice(files, name);
-  console.log(`cloned "${name}" -> ${id} (saved to server/voice.json). Now run: npm run voice -- reactions`);
+  console.log(`cloned "${name}" -> ${id} (saved to server/voice.json).`);
 } else {
-  console.error('usage: npm run voice -- status | reactions | clone <audio files> --name "Dad"');
+  console.error('usage: npm run voice -- status | clone <audio files> --name "Dad"');
   process.exit(1);
 }

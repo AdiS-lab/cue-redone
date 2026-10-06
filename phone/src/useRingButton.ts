@@ -1,29 +1,29 @@
 import { useRef } from 'react';
-import type { PressAction } from './ringRelay';
 
-const DOUBLE_MS = 260;
+export type PressAction = 'click' | 'double' | 'hold';
 
-/** One big button, three gestures: tap = click, double tap = double, long press = hold. */
+const DOUBLE_MS = 300;
+
+/**
+ * One big button, three gestures: tap = click, double tap = double, long press = hold.
+ * Like the ring firmware, a tap is sent at once and a second tap within DOUBLE_MS adds "double";
+ * the app then gives "more" about the look the first tap started, so no tap waits for the double-tap window.
+ */
 export function useRingButton(send: (a: PressAction) => void) {
-  const taps = useRef(0);
-  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const lastTap = useRef(0);
   return {
     onTap() {
-      taps.current++;
-      clearTimeout(timer.current);
-      if (taps.current >= 2) {
-        taps.current = 0;
+      const now = Date.now();
+      if (now - lastTap.current <= DOUBLE_MS) {
+        lastTap.current = 0;
         send('double');
         return;
       }
-      timer.current = setTimeout(() => {
-        taps.current = 0;
-        send('click');
-      }, DOUBLE_MS);
+      lastTap.current = now;
+      send('click');
     },
     onHold() {
-      clearTimeout(timer.current);
-      taps.current = 0;
+      lastTap.current = 0;
       send('hold');
     },
   };

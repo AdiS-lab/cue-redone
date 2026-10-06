@@ -4,15 +4,13 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { StatusBar } from 'expo-status-bar';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as Haptics from 'expo-haptics';
-import { ContactsScreen } from './ContactsScreen';
-import { RingScreen } from './RingScreen';
 import { NetworkLine } from './NetworkLine';
 import { probe } from './probe';
 import { useRingButton } from './useRingButton';
 
-// Two ways to be the ring, both speaking the hub's ring protocol (see ../../src/vision/README.md "Wi-Fi (WebSocket)"):
-//   "ring"  the real ring (ESP32-CAM on its own Wi-Fi): src/RingScreen.tsx relays its pictures and buttons to the hub
-//   "phone" this phone's camera and a big on-screen button (for testing without the ring), below
+// This phone stands in for the Qu ring (ESP32-CAM, firmware/qu-ring): its camera is the ring's camera and one big
+// button gives click (look), double (more) and hold (ask). It speaks the same protocol to the hub's /phone endpoint
+// (see ../../src/vision/README.md "Wi-Fi (WebSocket)"):
 //   phone -> hub: JPEG binaries, {"type":"burst-end"}, {"type":"button","action":"click|double|hold"}
 //   hub -> phone: {"type":"capture","count":n}, {"type":"feedback","kind":"..."}
 
@@ -30,13 +28,10 @@ const BUZZ: Record<string, () => Promise<void>> = {
 };
 
 export default function App() {
-  const [source, setSource] = useState<'ring' | 'phone'>('ring');
-  const [ringUrl, setRingUrl] = useState('ws://192.168.4.1:81/'); // the ring's own Wi-Fi network, "Qu-Ring"
   const [url, setUrl] = useState('ws://192.168.1.10:8787/phone');
   const [active, setActive] = useState(false);
   const [link, setLink] = useState<Link>('idle');
   const [last, setLast] = useState('');
-  const [showContacts, setShowContacts] = useState(false);
 
   // Remember what was typed: the app often has to be reopened (Wi-Fi changes), and retyping addresses is painful.
   const [loaded, setLoaded] = useState(false);
@@ -44,17 +39,15 @@ export default function App() {
     AsyncStorage.getItem('qu.connect.v1')
       .then((raw) => {
         if (!raw) return;
-        const v = JSON.parse(raw) as { source?: 'ring' | 'phone'; ringUrl?: string; url?: string };
-        if (v.source === 'ring' || v.source === 'phone') setSource(v.source);
-        if (v.ringUrl) setRingUrl(v.ringUrl);
+        const v = JSON.parse(raw) as { url?: string };
         if (v.url) setUrl(v.url);
       })
       .catch(() => {})
       .finally(() => setLoaded(true));
   }, []);
   useEffect(() => {
-    if (loaded) AsyncStorage.setItem('qu.connect.v1', JSON.stringify({ source, ringUrl, url })).catch(() => {});
-  }, [loaded, source, ringUrl, url]);
+    if (loaded) AsyncStorage.setItem('qu.connect.v1', JSON.stringify({ url })).catch(() => {});
+  }, [loaded, url]);
   const [detail, setDetail] = useState(''); // why the link is down (close code / error)
   const [perm, askPerm] = useCameraPermissions();
   const cam = useRef<CameraView>(null);
@@ -102,7 +95,7 @@ export default function App() {
   }, [safeSend]);
 
   useEffect(() => {
-    if (!active || source !== 'phone') return; // in ring mode RingScreen owns the hub link
+    if (!active) return;
     let closed = false;
     let retry: ReturnType<typeof setTimeout> | undefined;
     let keepalive: ReturnType<typeof setInterval> | undefined;
@@ -149,11 +142,9 @@ export default function App() {
       ws.current = null;
       setLink('idle');
     };
-  }, [active, source, url, capture, safeSend]);
+  }, [active, url, capture, safeSend]);
 
   const { onTap, onHold } = useRingButton(sendAction);
-
-  if (showContacts) return <ContactsScreen hubWsUrl={url} onClose={() => setShowContacts(false)} />;
 
   if (!active) {
     return (
@@ -161,41 +152,20 @@ export default function App() {
       <ScrollView contentContainerStyle={s.pageScroll} keyboardShouldPersistTaps="handled" keyboardDismissMode="interactive" automaticallyAdjustKeyboardInsets>
         <StatusBar style="dark" />
         <Text style={s.title}>Qu ring</Text>
-        <View style={s.seg}>
-          {(['ring', 'phone'] as const).map((k) => (
-            <Pressable key={k} onPress={() => setSource(k)} style={[s.segBtn, source === k && s.segOn]}>
-              <Text style={[s.segText, source === k && s.segTextOn]}>{k === 'ring' ? 'The ring' : "This phone's camera"}</Text>
-            </Pressable>
-          ))}
-        </View>
         <Text style={s.body}>
-          {source === 'ring'
-            ? "The ring's camera and button come in over its own Wi-Fi network, Qu-Ring. Join it in Settings first, then Connect. This phone passes the pictures and button presses on to the hub."
-            : "This phone is the ring: its camera sees what you point at, and one big button sends click, double or hold."}{' '}
-          Run <Text style={s.mono}>npm run hub</Text> on the laptop and enter the phone address it prints.
+          This phone is the ring: its camera sees what you point at, and one big button looks (tap), tells you more
+          (double tap) or asks a question (hold). Run <Text style={s.mono}>npm run hub</Text> on the laptop and enter
+          the phone address it prints.
         </Text>
         <NetworkLine />
-        {source === 'ring' && (
-          <>
-            <Text style={s.label}>Ring address</Text>
-            <TextInput value={ringUrl} onChangeText={setRingUrl} autoCapitalize="none" autoCorrect={false} keyboardType="url" returnKeyType="done" onSubmitEditing={Keyboard.dismiss} selectTextOnFocus style={s.input} accessibilityLabel="Ring address" />
-          </>
-        )}
         <Text style={s.label}>Hub address</Text>
         <TextInput value={url} onChangeText={setUrl} autoCapitalize="none" autoCorrect={false} keyboardType="url" returnKeyType="done" onSubmitEditing={Keyboard.dismiss} selectTextOnFocus style={s.input} accessibilityLabel="Hub address" />
         <Pressable style={s.primary} onPress={() => setActive(true)}>
           <Text style={s.primaryText}>Connect</Text>
         </Pressable>
-        <Pressable style={s.secondary} onPress={() => setShowContacts(true)}>
-          <Text style={s.secondaryText}>Add people from my contacts</Text>
-        </Pressable>
       </ScrollView>
       </KeyboardAvoidingView>
     );
-  }
-
-  if (source === 'ring') {
-    return <RingScreen ringUrl={ringUrl} hubUrl={url} onChange={() => setActive(false)} onContacts={() => setShowContacts(true)} />;
   }
 
   if (!perm?.granted) {
@@ -219,18 +189,13 @@ export default function App() {
           <View style={[s.dot, { backgroundColor: dot }]} />
           <Text style={s.pillText}>{link === 'live' ? 'Connected' : link === 'retrying' ? 'Reconnecting…' : 'Connecting…'}</Text>
         </View>
-        <View style={{ flexDirection: 'row', gap: 8 }}>
-          <Pressable style={s.pill} onPress={() => setShowContacts(true)}>
-            <Text style={s.pillText}>Contacts</Text>
-          </Pressable>
-          <Pressable style={s.pill} onPress={() => setActive(false)}>
-            <Text style={s.pillText}>Change</Text>
-          </Pressable>
-        </View>
+        <Pressable style={s.pill} onPress={() => setActive(false)}>
+          <Text style={s.pillText}>Change</Text>
+        </Pressable>
       </View>
       <View style={s.reticle} pointerEvents="none" />
       <View style={s.bottom}>
-        <Text style={s.hint}>tap: take picture · double tap: quick reply · hold: queue sentence</Text>
+        <Text style={s.hint}>tap: look · double tap: more · hold: ask</Text>
         <Pressable
           onPress={onTap}
           onLongPress={onHold}
@@ -258,13 +223,6 @@ const s = StyleSheet.create({
   primary: { height: 64, borderRadius: 20, backgroundColor: BLUE, alignItems: 'center', justifyContent: 'center' },
   primaryText: { fontSize: 20, fontWeight: '700', color: '#fff' },
   label: { fontSize: 13, fontWeight: '700', letterSpacing: 0.6, textTransform: 'uppercase', color: '#5B616D', marginBottom: -10 },
-  seg: { flexDirection: 'row', gap: 6, padding: 4, borderRadius: 16, backgroundColor: '#ECE7DD' },
-  segBtn: { flex: 1, height: 48, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
-  segOn: { backgroundColor: '#fff' },
-  segText: { fontSize: 15, fontWeight: '700', color: '#6F7480' },
-  segTextOn: { color: '#15171C' },
-  secondary: { height: 56, borderRadius: 18, borderWidth: 1.5, borderColor: BLUE, alignItems: 'center', justifyContent: 'center' },
-  secondaryText: { fontSize: 18, fontWeight: '700', color: BLUE },
   cam: { flex: 1, backgroundColor: '#000' },
   top: { position: 'absolute', top: 60, left: 16, right: 16, flexDirection: 'row', justifyContent: 'space-between' },
   pill: { flexDirection: 'row', alignItems: 'center', gap: 8, height: 40, paddingHorizontal: 14, borderRadius: 20, backgroundColor: 'rgba(0,0,0,.55)' },

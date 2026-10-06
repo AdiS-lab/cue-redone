@@ -6,49 +6,47 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-Cue: a browser-only AAC prototype (React 19 + Vite + Tailwind v4 + TypeScript). The webcam tracks objects, the user captures one as a tile, taps a core word, picks a generated sentence, and it is spoken aloud. There is no backend; everything runs in one Chrome tab. Stable facts and non-goals live in `project.md`, the current task and acceptance criteria in `task.md`, and verified API quirks in `.agent/knowledge.md`. Read those before changing behavior they cover.
+Qu: a camera ring you point at things. An ESP32-CAM ring (or the webcam while developing) takes a photo on a button press, the local hub asks Claude vision about it, and the answer is spoken sentence by sentence as it streams. A session notebook of everything pointed at goes with each request, so answers adapt to the place and to what was asked. Stack: React 19 + Vite + Tailwind v4 + TypeScript in the browser, a small Node/TypeScript hub in `server/`, Arduino firmware in `firmware/qu-ring/`. Stable facts live in `project.md`, the current task and acceptance criteria in `task.md`, decisions in `.agent/decisions.md`, verified API quirks in `.agent/knowledge.md`. Read those before changing behavior they cover.
 
 ## Commands
 
 ```bash
 npm install
+npm run hub          # local hub on :8787 (LOOK_MOCK=1 for a mock brain without a key)
 npm run dev          # http://localhost:5173 (use Chrome, allow camera)
 npm run build        # tsc -b && vite build; this is the type check + build gate
+npm test             # vitest: src/lib and server unit tests
+npm run e2e          # headless Chromium against a mock hub, fake webcam and fake ring
 npm run lint         # oxlint
-npx tsc --noEmit     # typecheck only
+npm run typecheck:server
 ```
 
-There is no test suite. Verify with `npm run build`, then by running the real flow in a browser.
-
-`predev`/`prebuild` run `scripts/copy-wasm.mjs` (MediaPipe wasm from node_modules → `public/mediapipe/wasm`) and `scripts/fetch-models.mjs` (TFLite models → `public/models`). Both output dirs are gitignored. The first run needs network access.
-
-Optional `.env.local`: `VITE_ANTHROPIC_API_KEY=...` turns on the Claude vision and composer paths. Without it the app is fully on-device. The key ships to the browser (prototype only). Append `?delegate=CPU` to the URL to force CPU inference.
+Keys go in `server/.env.local` (see `server/.env.example`): `ANTHROPIC_API_KEY` for `/look`, optional `ELEVENLABS_API_KEY` for the voice. The browser never holds a key. In this sandbox, install with `npm install --ignore-scripts` (onnxruntime-node's postinstall download is blocked; nothing here needs it).
 
 ## Architecture
 
 ```
-Webcam ─► ObjectDetector (EfficientDet-Lite0, VIDEO mode, every frame)
-            └► Tracker (IoU matching, smoothing, label voting) ─► canvas overlay
-Click/Space ─► crop box ─► ImageClassifier (EfficientNet-Lite0, ImageNet)
-                             └► (optional) Claude vision ─► tile
-Tile + core word ─► templates (instant) ─► (optional) Claude composer ─► sentences
-Sentence ─► SpeechSynthesis
+Ring / webcam (FrameSource) ─► Viewfinder: sharpest frame of the burst or recent stream frames
+Button (ButtonInput: keyboard, Wi-Fi, BLE) ─► useQu: click=look, hold=ask, double=more
+look: quality gate (dark/blurry, on device) ─► same-view cache (fingerprint.ts) ─► hub POST /look (SSE)
+hub: server/prompt.ts + Claude (Haiku 4.5 look/ask, Opus 5.5 more) ─► streamed text
+browser: AnswerStream splits sentences ─► Speaker (ElevenLabs via /voice/speak, else SpeechSynthesis) ─► notebook
 ```
 
 Things that take reading several files to see:
 
-- **State**: one `useReducer` in `src/lib/store.ts` (`CueState`, shapes in `src/lib/types.ts`). `App.tsx` handles orchestration: capture, compose, speak, queue, mic listener. `CameraView` exposes an imperative handle (`CameraViewHandle`) through a ref and owns the detection loop and overlay.
-- **Two-stage results with stale guards**: composition dispatches template sentences from `composeMock` right away, then replaces them with `claudeComposer` output only if `composeSeq` still matches, so a newer request wins. Identification does the same thing: a tile shows the classifier label first, with `refining: true` while Claude vision runs, and then gets patched through `UPDATE_CAPTURE`.
-- **MediaPipe loading** (`src/lib/vision.ts`): this module provides the shared wasm fileset, `createWithFallback` (GPU → CPU), and a local-model resolver that falls back to storage.googleapis.com. The detector uses the **float16** model on GPU. The classifier is deliberately **CPU-only**, because the int8 model throws on GPU. The int8 detector returns 0 detections on GPU. `detectForVideo` needs strictly increasing timestamps.
-- **Coordinates**: `Box` is in unmirrored video-frame pixels. Mirroring and aspect-correct scaling are applied only when drawing and hit-testing in `CameraView`.
-- **Claude** (`src/lib/claude.ts`): the SDK is imported lazily and only when the key is set, so Vite tree-shakes it out of keyless builds. Uses `dangerouslyAllowBrowser: true`, and the model constant is `CLAUDE_MODEL`.
-- **Extension seams**: `input.ts` maps keys to ring actions `click | double | hold` (Space / D / H), which is where a future ring client plugs in. `speak.ts` has the `TTSEngine` interface, `compose.ts` has the `Composer` interface plus `ComposeInput.partnerContext`, and `listen.ts` holds the energy-based pause detector that auto-speaks the queued sentence.
+- **Answer contract**: line 1 is a spoken headline, then optional detail, then a `@meta {...}` line that is parsed into the notebook and never spoken. `server/prompt.ts` asks for it; `src/lib/answer.ts` enforces it on the stream.
+- **One interaction at a time**: every press calls `begin()` in `useQu.ts`, which stops speech and aborts the in-flight request; a stale answer never speaks over a newer press. An interrupted answer keeps what arrived.
+- **Cache**: a replay is spoken immediately and re-checked silently; a different fresh headline (`sameAnswer`, number-aware) is spoken as a correction.
+- **Offline**: `HubUnavailable` marks the entry `pending` (photo kept in memory) and it is answered when `/health` comes back.
+- **Hardware seam**: `src/vision/sources` (`FrameSource`) and `src/vision/input` (`ButtonInput`) are the contract with the ring; the wire protocol is in `src/vision/README.md`. The hub relays `/phone` (ring) ↔ `/ring` (browser) untouched.
+- **Coordinates/orientation**: frames are rotated/flipped per source + hand before anything else sees them (`vision/sources/orient.ts`).
 
-## Constraints (from project.md)
+## Constraints
 
-- Browser only: no server, no Python, no server-side ML. Must work offline apart from the optional Claude calls.
-- TTS is browser `SpeechSynthesis`; no ElevenLabs. No ring hardware, mobile layout, accounts, or persistence.
-- Tailwind only (v4 via `@tailwindcss/vite`, no config file); no component library.
+- No server-side ML; the hub only proxies API calls (keys stay off the browser) and relays the ring.
+- Stay on Vite + React + TypeScript + Tailwind v4 (no config file, no component library).
+- Do not break `FrameSource` / `ButtonInput`; `npm run build` must pass.
 
 # Hackathon Goals & Tracks
 

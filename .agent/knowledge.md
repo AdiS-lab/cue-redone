@@ -1,27 +1,25 @@
 # Verified Knowledge
 
-## MediaPipe Tasks Vision (browser) — @mediapipe/tasks-vision 1.0.1
+## Claude API from the hub (@anthropic-ai/sdk 0.131.0, verified 2026-10-06 against the SDK types; no key in the sandbox, so not run live)
 
-- Wasm served locally from `public/mediapipe/wasm` (copied from node_modules by `scripts/copy-wasm.mjs`) — avoids `@latest` CDN version drift
-- Models downloaded to `public/models` by `scripts/fetch-models.mjs`; app falls back to storage.googleapis.com
-- Detector: `efficientdet_lite0/float16/1` on GPU works. **int8 detector on GPU returned 0 detections** (headless Chromium/SwiftShader) — avoid
-- Classifier: `efficientnet_lite0/int8/latest` **throws on GPU** ("TensorsDequantizationCalculator: Unsupported input tensor type: Float32") — run on CPU
-- `detectForVideo(video, ts)` requires strictly increasing timestamps
-- `BoundingBox` = `originX, originY, width, height` in pixels of the input frame
-- ImageNet display names can contain commas ("notebook, notebook computer") — take the first
-- ImageNet has no "person" class — keep the COCO detector label for people
-- MediaPipe posts telemetry to `odml.pa.googleapis.com` (failures are harmless)
+- `client.messages.stream({...}, { signal })`, iterate events, `content_block_delta` + `delta.type === "text_delta"`; `await stream.finalMessage()` for `stop_reason` / `model`.
+- `output_config: { effort: "low" }` type-checks on `messages.stream` params.
+- Refusal fallback: `client.beta.messages.stream({ ..., betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" })` (`BetaFallbacksParam = Array<BetaFallbackParam> | "default"`). Used for the Opus "more" request.
+- Model ids used: `claude-haiku-4-5` (look/ask, no thinking param), `claude-opus-5-5` (more; thinking can't be disabled, effort is the lever).
+- Image block: `{ type: "image", source: { type: "base64", media_type: "image/jpeg", data } }`. Claude downscales images above ~1.15 MP, so the browser sends ≤ 1280 px on the long side.
+- `system` with `cache_control: { type: "ephemeral" }` only caches if the prefix reaches the model's minimum cacheable length; the Qu system prompt is probably shorter, so expect no cache hits until measured.
 
-## Browser SpeechSynthesis
+## Same-view fingerprint (measured 2026-10-06 by scripts/e2e.mjs on 12 test-images, headless Chromium)
 
-- `speechSynthesis.speak(utterance)` async, fires `onend`; `cancel()` stops
-- May require a prior user gesture
+- 64-bit dHash on a 9x8 grid: a 2-3 % shift + 10 % brightness flipped 8-23 bits; different images differed by 20-23+ bits. Unusable for re-points even with block-averaged downscaling.
+- 32x24 block-averaged grayscale + normalised cross-correlation at the best of ±3 px shifts: same view 0.98-0.99, different images ≤ 0.54. Threshold 0.9 plus a quadrant colour check (same view ≤ 19.3 mean RGB difference; threshold 28).
 
-## Anthropic SDK in the browser
+## Browser
 
-- `new Anthropic({ apiKey, dangerouslyAllowBrowser: true })`; model id `claude-haiku-4-5`
-- Image input: `{ type: "image", source: { type: "base64", media_type: "image/jpeg", data } }`
-- Vite tree-shakes the lazy SDK import when `VITE_ANTHROPIC_API_KEY` is unset at build time
+- SpeechSynthesis: `speak(utterance)` is async and fires `onend`; `cancel()` stops; may need a prior user gesture. Some systems never fire `onend`, so `speak.ts` has a safety timeout.
+- Speech recognition: `webkitSpeechRecognition` in Chrome (sends audio to Google's service, needs network); absent in Firefox. Headless Chromium has no usable recognition; the e2e deletes it to exercise the typed fallback.
+- MediaSource with `audio/mpeg` works in the Playwright Chromium build (headless): appending fetch-body chunks of a streamed mp3 starts playback on the first chunk (measured 23 ms after queueing vs ≥ 1.2 s for blob-then-play with an 8 x 150 ms mock stream).
+- A `canvas.captureStream()` only emits frames when the canvas is repainted: a fake webcam must redraw continuously or the frame buffer keeps stale frames.
 
 ## Tailwind v4 with Vite
 
@@ -29,45 +27,22 @@
 
 ## Testing in the agent sandbox
 
-- Headless Chromium: `--proxy-server=https=<proxy host:port>` so http://127.0.0.1 is not proxied (Playwright's `proxy` option adds `<-loopback>`)
-- Fake webcam: override `navigator.mediaDevices.getUserMedia` to return `canvas.captureStream()` of a still image
-- Fetch models with `NODE_USE_ENV_PROXY=1`
-
-## SigLIP 2 in Transformers.js 4.3 (verified 2026-10-03)
-
-- `onnx-community/siglip2-base-patch16-224-ONNX` has separate `vision_model_*.onnx` / `text_model_*.onnx`; load with `SiglipVisionModel` / `SiglipTextModel`, use `pooler_output`
-- Text must be tokenized with `padding: "max_length", max_length: 64` (Gemma tokenizer)
-- logit_scale = 4.724453 (exp ≈ 112.7), logit_bias = −16.7717 (read from google/siglip2-base-patch16-224 safetensors header)
-- **`vision_model_quantized`/`q8` is broken** (cat image → "purse"); `q4f16` ≈ `fp16` in accuracy; text `q8` ≈ text `fp16`
-- Transformers.js defaults ORT wasm to jsDelivr; set `env.backends.onnx.wasm.wasmPaths` to local `ort-wasm-simd-threaded.asyncify.{mjs,wasm}` for offline
-- WebGPU works in headless Chrome on macOS; WASM is ~3× faster with COOP/COEP (cross-origin isolated → threads)
+- `npm install` fails in onnxruntime-node's postinstall (blocked download) when transformers.js is a dependency; it no longer is. Use `npm install --ignore-scripts` if it comes back.
+- Headless Chromium: `/opt/pw-browsers/chromium`, launch with `--no-proxy-server` for localhost-only tests.
+- Fake webcam: override `navigator.mediaDevices.getUserMedia` to return `canvas.captureStream()` of a repainted canvas (`scripts/e2e.mjs`).
+- `spawn("npx", ["tsx", ...])` starts a child node process; kill the process group (`detached: true`, `process.kill(-pid)`) or the hub keeps running.
+- Hugging Face, ElevenLabs and GitHub release downloads are blocked by the egress proxy; api.anthropic.com is reachable.
 
 ## ElevenLabs (verified 2026-10-03 with a restricted key)
 
 - Auth header `xi-api-key`; secret keys are `sk_` + 51 chars total. The key *ID* shown in the dashboard is rejected (`api_key_id_used_as_api_key`); a wrong length gives `invalid_api_key_length`.
 - TTS: `POST /v1/text-to-speech/{voice_id}[/stream]?output_format=mp3_44100_64`, body `{text, model_id}`. Models `eleven_flash_v2_5`, `eleven_v3` both work; v3 accepts `[laughs]`.
-- Latency from the dev laptop: first byte 0.25 s via the hub on a warm connection, 0.8-1.4 s cold; hence cached clips for reactions.
+- Latency from the dev laptop: first byte 0.25 s via the hub on a warm connection, 0.8-1.4 s cold. `src/lib/speaker.ts` therefore fetches the next sentences' audio while the current one plays.
 - Instant clone: `POST /v1/voices/add` multipart `name` + `files` (+ `remove_background_noise`) -> `{voice_id, requires_verification}`.
 - Scribe realtime: `POST /v1/single-use-token/realtime_scribe` returned a token; model id `scribe_v2_realtime`.
 - A restricted key can lack `user_read` (`/v1/user/subscription` returns 401) and still do TTS/voices.
 
-## Photon Spectrum (spectrum-ts 12.10.1, verified 2026-10-03 against docs + compiler)
+## Removed on-device recognition (history, see git before 2026-10-06)
 
-- `npm i spectrum-ts`; `import { Spectrum, Emoji } from "spectrum-ts"; import { imessage } from "spectrum-ts/providers/imessage"`.
-- `const app = await Spectrum({ projectId, projectSecret, providers: [imessage.config()] })` (or env `SPECTRUM_PROJECT_ID` / `SPECTRUM_PROJECT_SECRET`). Cloud mode needs Node or Bun.
-- Receive: `for await (const [space, message] of app.messages)`; `message.direction` is "inbound"/"outbound"; `message.content.type === "text"` -> `.text`; `message.sender?.id`.
-- Proactive send: `const im = imessage(app); const dm = await im.space.create(await im.user("+1555..."))`; `await dm.send("text")`.
-- Tapback: `await message.react(Emoji.love | like | dislike | laugh | emphasize | question)`; needs the cloud package.
-- `server/messages.ts` compiles against these (tsc is the verification); NOT run against real Photon yet.
-
-## Photon CLI and shared-pool iMessage (verified 2026-10-03)
-
-- Package `@photon-ai/cli` (run via npx). `projects create --name X --platforms imessage [--json]` -> `{id, name, env}`; `projects secret <id> --json` -> `{id, projectSecret}`; `spectrum users add --first-name --last-name --email --phone [--invite]` (all four required non-interactively); `spectrum users ls --json` includes `assignedPhoneNumber`.
-- Free-plan send needs the target registered as a user AND (in our test) an inbound text from them to the assigned line seen by the connected hub; then `POST /messages/send` -> `{"sent":true,"mode":"photon"}`. A real text arrived on the phone.
-- Hub env: `SPECTRUM_PROJECT_ID`, `SPECTRUM_PROJECT_SECRET` in server/.env.local; never print the secret.
-
-## SigLIP 2 zero-shot object *state* (measured 2026-10-04 on test-images/, q4f16 vision + q8 text, Node CPU)
-
-- Coarse situation phrases separate well: "a mug held in a hand" 66% on held-mug-01 vs 0.2% on mug-01; "a toothbrush with toothpaste on it" 88%; "a phone in a case" 52% (top); "a person sitting in a chair" 0.3% on the empty chair; "pills spilled on a table" 0.3% on the closed bottle.
-- Fine states do NOT separate at 224 px: the empty mug scored "full of coffee" (8.4%) above "empty" (4.5%); "banana with brown spots" ranked 5th (2.7%) on visibly spotted bananas; phone "screen on" vs "dark screen" tied (29% vs 31%); pill bottle open/closed/empty all within 22-39%.
-- One crop embeds in 82-101 ms (Node, CPU). Conclusion: do not build word choices on empty/full, open/closed, clean/dirty or on/off cues from SigLIP; label + category from the namer are the reliable signal (see src/lib/frames/model.ts).
+- MediaPipe: float16 EfficientDet on GPU worked; int8 detector returned 0 detections on GPU; int8 EfficientNet classifier threw on GPU.
+- SigLIP 2 (q4f16 vision) named objects in ~0.1 s on WebGPU but could not tell fine object states (empty/full, open/closed, on/off) at 224 px; coarse situations ("held in a hand") separated well.

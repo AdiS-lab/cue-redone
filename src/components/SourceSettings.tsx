@@ -20,7 +20,6 @@ import {
   type ButtonKind,
   type SourceSettings as Settings,
 } from "../vision/settings";
-import type { StoredCalibration } from "../vision/calibration";
 
 interface Props {
   settings: Settings;
@@ -28,9 +27,6 @@ interface Props {
   source: FrameSource | null;
   status: StatusInfo | null;
   buttonStatus: StatusInfo | null;
-  calibration: StoredCalibration | null;
-  onCalibrate: () => void;
-  onPersonal?: () => void;
 }
 
 const blur = (e: { currentTarget: HTMLElement }) => e.currentTarget.blur();
@@ -41,9 +37,6 @@ export function SourceSettings({
   source,
   status,
   buttonStatus,
-  calibration,
-  onCalibrate,
-  onPersonal,
 }: Props) {
   const [open, setOpen] = useState(false);
   const [pairError, setPairError] = useState("");
@@ -347,128 +340,8 @@ export function SourceSettings({
               Reset
             </button>
           </div>
-          <span>Aim</span>
-          <div className="flex flex-wrap items-center gap-3">
-            <button
-              onClick={(e) => {
-                onCalibrate();
-                blur(e);
-              }}
-              className="px-2 py-0.5 rounded border border-gray-200 hover:bg-gray-50"
-              data-testid="calibrate"
-            >
-              Calibrate aim…
-            </button>
-            {onPersonal && (
-              <button
-                onClick={(e) => {
-                  onPersonal();
-                  blur(e);
-                }}
-                className="px-2 py-0.5 rounded border border-gray-200 hover:bg-gray-50"
-                data-testid="personal-open"
-              >
-                Teach objects…
-              </button>
-            )}
-            <label className="flex items-center gap-1 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={settings.useCalibration}
-                onChange={(e) => {
-                  onChange({ ...settings, useCalibration: e.target.checked });
-                  blur(e);
-                }}
-              />
-              use it
-            </label>
-            <span className="text-gray-400">
-              {calibration
-                ? `${Math.round(calibration.offset.dx * 100)}% right, ${Math.round(calibration.offset.dy * 100)}% down`
-                : "not calibrated"}
-              {settings.useCalibration ? "" : " · aiming at the centre"}
-            </span>
-            <label className="flex items-center gap-1">
-              zone
-              <select
-                value={settings.zoneFrac}
-                onChange={(e) => {
-                  onChange({ ...settings, zoneFrac: Number(e.target.value) });
-                  blur(e);
-                }}
-                className="border border-gray-200 rounded px-1 py-0.5 bg-white"
-              >
-                {[0.3, 0.4, 0.5, 0.6, 0.7].map((z) => (
-                  <option key={z} value={z}>
-                    {Math.round(z * z * 100)}% of frame
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="flex items-center gap-1">
-              choices
-              <select
-                value={settings.maxCandidates}
-                onChange={(e) => {
-                  onChange({ ...settings, maxCandidates: Number(e.target.value) });
-                  blur(e);
-                }}
-                className="border border-gray-200 rounded px-1 py-0.5 bg-white"
-              >
-                {[1, 2, 3, 4, 5, 6].map((n) => (
-                  <option key={n} value={n}>
-                    {n}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </div>
-
-          <span>Choosing</span>
-          <div className="flex flex-wrap items-center gap-3">
-            <label className="flex items-center gap-1 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={settings.speakOnHighlight}
-                onChange={(e) => {
-                  onChange({ ...settings, speakOnHighlight: e.target.checked });
-                  blur(e);
-                }}
-              />
-              Say each choice aloud
-            </label>
-            <label className="flex items-center gap-1 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={settings.autoScan}
-                onChange={(e) => {
-                  onChange({ ...settings, autoScan: e.target.checked });
-                  blur(e);
-                }}
-              />
-              Auto-scan every
-            </label>
-            <NumberField
-              value={settings.autoScanSec}
-              max={10}
-              onChange={(autoScanSec) => onChange({ ...settings, autoScanSec: Math.max(0.5, autoScanSec) })}
-            />
-            <span className="text-gray-400">s (then one click chooses)</span>
-          </div>
-
           <span>Feedback</span>
           <div className="flex flex-wrap items-center gap-3">
-            <label className="flex items-center gap-1 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={settings.onTargetCue}
-                onChange={(e) => {
-                  onChange({ ...settings, onTargetCue: e.target.checked });
-                  blur(e);
-                }}
-              />
-              “On target” cue (live camera only)
-            </label>
             <label className="flex items-center gap-1 cursor-pointer">
               <input
                 type="checkbox"
@@ -478,15 +351,15 @@ export function SourceSettings({
                   blur(e);
                 }}
               />
-              Beep/vibrate on this device
+              Tick/vibrate on this device when the ring is pressed
             </label>
-            <span className="text-gray-400">The ring buzzes “got it” after each picture if it supports feedback.</span>
+            <span className="text-gray-400">The ring also gets “got it” / error feedback if it supports it.</span>
           </div>
 
           <span />
           <span className="text-gray-400">
-            Orientation is saved per camera source and hand, and is applied before recognition so
-            the models always see an upright picture. “Mirror” on the preview only changes the display.
+            Orientation is saved per camera source and hand, and is applied before the photo is sent,
+            so Qu always sees an upright picture.
           </span>
         </div>
       )}

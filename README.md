@@ -1,114 +1,102 @@
-# Qu — Prototype
+# Qu
 
-Camera-based AAC that turns what you point at into speech.
+A camera ring you point at things. Press the button and Qu tells you, out loud, what matters about what you're
+pointing at: it reads labels and signs, says what a product is and the one useful fact about it, describes a room.
+It remembers what you've pointed at during the session, so a box in a pharmacy and the same box in a kitchen get
+different answers, and you can ask later "what did that label say?".
+
+Pointing and listening is faster than reading when your hands are busy, the light is bad, or audio just suits you.
+
+| Ring gesture | Keyboard | What happens |
+|---|---|---|
+| press | Space | **Look**: explain what you're pointing at, headline first |
+| hold | H | **Ask**: photo now, then speak a question ("is this vegan?", "when does it expire?") |
+| press twice | D | **More**: a deeper answer about the last look |
+
+Say "my goal is …" or "I'm shopping for …" while holding to set a goal that shapes every answer
+("I'm allergic to nuts").
 
 ## Quick start
 
 ```bash
 npm install
-npm run dev        # copies MediaPipe wasm + downloads models into public/ on first run
+cp server/.env.example server/.env.local   # add ANTHROPIC_API_KEY (and optionally ELEVENLABS_API_KEY)
+npm run hub                                 # terminal 1: the local hub on :8787
+npm run dev                                 # terminal 2: the app on :5173
 ```
 
-Open **Chrome** at http://localhost:5173 and allow camera access. The first run also downloads the 55 MB SigLIP 2 recognition model into `public/models` (progress shows under the camera); after that everything works offline.
+Open **Chrome** at http://localhost:5173, allow the camera, point at something and press Space.
 
-1. **Track** — the webcam shows live boxes around objects it recognises (80 COCO classes: cup, bottle, phone, laptop, book, banana, chair, person…). The focused object (hovered, or nearest the centre) has a solid box.
-2. **Capture + identify** — press **Space** (the ring button). Qu names what is in the centre of the picture with SigLIP 2 against an everyday vocabulary ("mug", "water bottle", "remote") or a taught personal object ("Mom's mug"); if it isn't sure it offers a few choices (Space = next, H = choose, D = retake). **Clicking a box** names that box directly. The result appears as a tile with a thumbnail.
-3. **Fix the name** (optional) — tap one of the alternative labels under a tile to rename it.
-4. **Core word** — tap WANT / NO / MORE / GO / HELP / YES / QUESTION → 3 candidate sentences.
-5. **Speak** — tap a sentence to say it aloud, or **Queue** it and press "Speak Now" later.
+No key yet? `LOOK_MOCK=1 npm run hub` streams a labelled mock answer so you can try the whole loop.
 
-| Key | Action (simulates the ring) |
-|---|---|
-| Space | Capture + identify the focused object |
-| D | Instant backchannel (cycles yes / no / haha / mm-hmm / wait / wow / okay / thanks) |
-| H | Queue the first candidate sentence |
+### With the ring
 
-Under the camera, **Camera & ring** picks the camera source (webcam, Wi-Fi ring, Bluetooth ring, image files), photos per press, the ring button connection, hand, and rotation/flip. URL parameters work too, e.g. `?source=ws&url=ws://192.168.4.1:81/&mode=still`. Run `npm test` for unit tests.
+Flash `firmware/qu-ring/` onto an ESP32-CAM with a Grove button ([firmware/qu-ring/README.md](firmware/qu-ring/README.md)),
+then open http://localhost:5173/?source=ws&url=ws://localhost:8787/ring&mode=still&button=ws.
 
-Extras under the camera: **Say name on capture** (speaks the identified name), **Auto-speak queue at pause** (listens on the mic and speaks the queued sentence when your partner stops talking for ~0.7 s), a camera picker (when you have more than one), and a **Mirror** toggle (turn off if the camera faces away from you).
+No hardware? `npm run fake-ring` connects to the hub exactly like the board does: type `c` / `d` / `h` + Enter to press,
+`n` + Enter to point at the next image in `test-images/`. The phone app in `phone/` can also stand in for the ring.
 
-### Optional: Claude
-
-Create `.env.local`:
+## How it works
 
 ```
-VITE_ANTHROPIC_API_KEY=sk-ant-...
+ring (ESP32-CAM) --Wi-Fi WS--> hub /phone <-> /ring --> browser
+                                                         │ press: tick, ask the ring for a 2-3 photo burst
+                                                         │ sharpest photo -> dark/blurry? say so (on device, < 0.5 s)
+                                                         │ same view as a recent look? replay its answer instantly
+                                                         ▼
+                              hub POST /look  <── photo (≤1280 px) + question + session notebook + goal
+                                 │ Claude vision (Haiku 4.5 for look/ask, Opus 5.5 for "more"), streamed
+                                 ▼
+browser: each sentence is spoken the moment it is complete (ElevenLabs via the hub, streamed into MediaSource
+         so audio starts on the first bytes; else the browser voice)
+         -> notebook entry: headline, detail, kind, place guess, thumbnail
 ```
 
-With a key, each capture is also sent to Claude Haiku 4.5 vision for an everyday name ("tv remote", "reusable water bottle"), and sentences come from Claude (template sentences show instantly, then get replaced). Without a key everything runs on-device. **The key is exposed to the browser — prototype only.**
+- **Answer format.** The first line is a spoken headline of ≤ 15 words that stands on its own; a few detail sentences
+  may follow; a final `@meta {"kind","title","place"}` line feeds the notebook and is never spoken
+  (`server/prompt.ts`, `src/lib/answer.ts`).
+- **Latency.** Target: under 2 s from press to first word on a new look, under 0.3 s on a replay. A tick plays the
+  instant you press. The browser console logs `[qu] {"firstSentenceMs":…, "hubTtftMs":…}` for every answer.
+- **Same-view cache.** A 32×24 thumbnail compared by normalised cross-correlation over small shifts recognises a
+  re-point of the same thing (≥ 0.98 on test images) and rejects different things (≤ 0.54). A replay is spoken at
+  once and re-checked in the background; if the fresh answer differs it is spoken as a correction
+  (`src/lib/fingerprint.ts`).
+- **Session notebook.** The last 12 answers and the goal go with every request; the notebook survives a reload until
+  you press *End session* (`src/lib/notebook.ts`).
+- **Offline.** If the hub can't be reached, Qu says so, keeps the photo, and answers it when the hub is back.
+- **Privacy.** On the ring the camera only takes pictures when you press. Qu describes people but never identifies them.
+- **Keys** stay in `server/.env.local`; the browser only talks to the hub.
 
-### Troubleshooting
+Decisions and the research behind them: [.agent/decisions.md](.agent/decisions.md). Camera sources, orientation,
+bursts and the ring wire protocol: [src/vision/README.md](src/vision/README.md).
 
-- **"Loading models…" forever / model error** — the first run needs internet to download models (`public/models/`). After that it works offline.
-- **No boxes appear on your GPU** — open http://localhost:5173/?delegate=CPU to force CPU inference.
-- **Camera denied** — click the camera icon in the address bar, allow, reload.
-
-## Architecture
-
-Everything runs in one browser tab. No backend.
-
-```
-Camera source (webcam / Wi-Fi ring / Bluetooth ring / files) ─► orientation (rotate/flip per source + hand)
-  stream: ObjectDetector every frame ─► Tracker ─► overlay, "on target" cue, 10-frame buffer
-  still:  burst of photos on press ─► sharpest photo ─► ObjectDetector once
-Ring press ─► aim point + ranked candidates ─► name crops, centre first:
-              taught personal objects ─► SigLIP 2 vs 637-label vocabulary (history-boosted order)
-              ─► EfficientNet/ImageNet only if SigLIP is unavailable
-  sure   ─► tile (+ optional Claude refinement)
-  unsure ─► scanner with a few choices (+ Claude's guess when a key is set) ─► tile
-Tile + core word ─► templates (instant) ─► (optional) Claude composer ─► sentences
-Sentence ─► SpeechSynthesis
-```
-
-The recognition side (`src/vision/`) is documented in [src/vision/README.md](src/vision/README.md), including how to plug in new ring hardware.
-
-### Evaluating recognition
+## Commands
 
 ```bash
-npm run eval                                   # WebGPU and WASM, writes eval-results/
-npm run eval -- --backends webgpu --no-personal --dirs test-images
+npm run dev               # app
+npm run hub               # local hub (LOOK_MOCK=1 for a mock brain; LOOK_MODEL / DEEP_MODEL to change models)
+npm run build             # type check + production build (the verification gate)
+npm test                  # unit tests (browser lib + hub)
+npm run e2e               # headless Chromium end to end against a mock hub, fake webcam and fake ring
+npm run lint
+npm run fake-ring         # ring stand-in that talks to the hub
+npm run mock-ring         # older stand-in: a WebSocket camera the browser connects to directly
+npm run voice -- status   # ElevenLabs voice (clone with: npm run voice -- clone a.mp3 --name "Me")
 ```
 
-Runs every image in `test-images/` (and `test-images-public/` if it exists; same `labels.json` format) through the same capture and naming code the ring uses, in headless Chrome, and reports top-1/top-3 accuracy, latency, which source answered, a confidence-threshold sweep, and a personal-object threshold sweep. The page itself is `http://localhost:5173/?eval=1` in `npm run dev`. Latest results: [eval-results/summary.md](eval-results/summary.md).
+## Layout
 
-## Module structure
-
-| File | Purpose |
+| Path | What |
 |---|---|
-| `src/components/CameraView.tsx` | Camera stream, detection loop, overlay drawing, click/Space targeting |
-| `src/lib/detect.ts` | MediaPipe ObjectDetector (float16 model, GPU with CPU fallback) |
-| `src/lib/tracker.ts` | Frame-to-frame tracker giving stable ids and smooth boxes |
-| `src/lib/classify.ts` | MediaPipe ImageClassifier for fine-grained names (CPU) |
-| `src/lib/identify.ts` | Crop + classify + choose label; Claude vision refinement |
-| `src/lib/vision.ts` | Shared wasm loader, GPU→CPU fallback, local-model resolver |
-| `src/lib/claude.ts` | Lazy Anthropic SDK client (only when a key is set) |
-| `src/lib/compose.ts` | Template sentences + Claude composer (`Composer` interface) |
-| `src/lib/speak.ts` | SpeechSynthesis + backchannels (`TTSEngine` interface) |
-| `src/lib/listen.ts` | Energy-based pause detector for auto-speaking the queue |
-| `src/lib/input.ts` | Keyboard → ring actions (wrapped by `KeyboardInput` in `src/vision/input`) |
-| `src/data/vocabulary.ts` | 637 everyday/AAC labels SigLIP chooses from (re-run `npm run embed-vocab` after editing) |
-| `src/vision/` | Camera sources (webcam, Wi-Fi, Bluetooth, files), ring button inputs, orientation, burst capture, aim/candidates, SigLIP naming, personal objects, selection history, eval harness — see [src/vision/README.md](src/vision/README.md) |
-| `src/components/PersonalObjects.tsx` | Teach, rename and delete personal objects ("Teach objects…" in the Camera & ring panel) |
-| `src/components/SourceSettings.tsx` | "Camera & ring" panel: source, photos per press, button, hand, rotation/flip |
-| `src/lib/store.ts` | useReducer state |
-| `scripts/` | `copy-wasm.mjs`, `fetch-models.mjs` (run automatically before dev/build), `mock-ring.mjs` (fake Wi-Fi ring for testing), `embed-vocab.mjs` (vocabulary text embeddings), `eval.mjs` (recognition eval) |
-
-## Extension points
-
-1. **Ring hardware** — implement `FrameSource` / `ButtonInput` in `src/vision/` (see "Connecting new hardware" in [src/vision/README.md](src/vision/README.md)); Wi-Fi and Bluetooth versions exist with placeholder protocols
-2. ~~ElevenLabs TTS~~ — done: `src/lib/tts.ts` (through the hub), see the care loop below
-3. **Better VAD** — swap the energy detector in `listen.ts` for vad-web/Silero
-4. **Partner transcription** — feed Web Speech API text into `ComposeInput.partnerContext`
-
-
-## Qu communication loop (sponsor integrations)
-
-One demo scene: the user points at something and Qu says their sentence in their own cloned voice (ElevenLabs); a sentence can also go privately to someone as an iMessage (Photon), whose reply is read aloud. **I need help** (header button, or ring hold with nothing queued) says it out loud or texts a contact. Plan and phase status: [docs/care-loop.md](docs/care-loop.md).
-
-| Part | Where | Run |
-|---|---|---|
-| Browser app (camera, naming, sentences, UI) | `src/` | `npm run dev` |
-| Hub (ElevenLabs, Photon; keys live here) | `server/` | `npm run hub` |
-| Phone as the ring | `phone/` (Expo) | `cd phone && npx expo start` |
-
-Tests: `npm test` (browser + hub).
+| `src/App.tsx` | Page: viewfinder, gesture buttons, answer card, notebook |
+| `src/lib/useQu.ts` | The core loop: look / ask / more, cache, offline retry |
+| `src/lib/look.ts` | Client for the hub's streamed `/look` |
+| `src/lib/answer.ts` | Streamed text → speakable sentences + meta |
+| `src/lib/speaker.ts` | Sentence queue; ElevenLabs with prefetch, browser voice fallback |
+| `src/lib/fingerprint.ts`, `notebook.ts`, `quality.ts`, `ask.ts`, `encode.ts` | Cache, session memory, photo gate, speech recognition, JPEG encoding |
+| `src/components/Viewfinder.tsx` | Preview and best-frame capture for stream and still sources |
+| `src/vision/` | Camera sources (`FrameSource`) and ring buttons (`ButtonInput`): webcam, Wi-Fi, Bluetooth, files |
+| `server/` | Hub: `/look` (Claude), `/voice/speak` (ElevenLabs), ring relay |
+| `firmware/qu-ring/` | ESP32-CAM + Grove button sketch |
+| `phone/` | Expo app that can act as the ring |
